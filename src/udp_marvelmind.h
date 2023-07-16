@@ -35,6 +35,11 @@ typedef struct
 
     uint16_t angle;
 
+    bool speed_exist;
+    int16_t speed_x_mms;
+    int16_t speed_y_mms;
+    int16_t speed_z_mms;
+
     bool updated;
 } HedgePositionValue;
 

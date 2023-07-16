@@ -148,6 +148,44 @@ static void processHedgePosData(struct MarvelmindUDP * udp, uint8_t *bufferInput
            angle= v16.w;
         }
 
+        ofs+= 2;
+        uint8_t dofs= bufferInput[4]+5;
+
+        bool speed_exist= false;
+        int16_t speed_x_mms= 0;
+        int16_t speed_y_mms= 0;
+        int16_t speed_z_mms= 0;
+
+        while(dofs>ofs) {
+          uint8_t dcode= bufferInput[ofs++];
+          bool known_code;
+
+          known_code= false;
+          switch(dcode) {
+              case 1: {//speed
+                  known_code= true;
+
+                  speed_exist= true;
+
+                  v16.b[0]= bufferInput[ofs++];
+                  v16.b[1]= bufferInput[ofs++];
+                  speed_x_mms= v16.wi;
+
+                  v16.b[0]= bufferInput[ofs++];
+                  v16.b[1]= bufferInput[ofs++];
+                  speed_y_mms= v16.wi;
+
+                  v16.b[0]= bufferInput[ofs++];
+                  v16.b[1]= bufferInput[ofs++];
+                  speed_z_mms= v16.wi;
+                  break;
+              }
+          }
+
+          if (!known_code)
+            break;
+        }
+
         // add to positionbuffer
 #ifdef WIN32
         EnterCriticalSection(&udp->lock_);
@@ -162,6 +200,10 @@ static void processHedgePosData(struct MarvelmindUDP * udp, uint8_t *bufferInput
         udp->positionBuffer[udp->lastValues_next].z= zc;
         udp->positionBuffer[udp->lastValues_next].flags= flags;
         udp->positionBuffer[udp->lastValues_next].angle= angle;
+        udp->positionBuffer[udp->lastValues_next].speed_exist= speed_exist;
+        udp->positionBuffer[udp->lastValues_next].speed_x_mms= speed_x_mms;
+        udp->positionBuffer[udp->lastValues_next].speed_y_mms= speed_y_mms;
+        udp->positionBuffer[udp->lastValues_next].speed_z_mms= speed_z_mms;
         udp->positionBuffer[udp->lastValues_next].updated= true;
 
         udp->lastValues_next++;
@@ -1014,12 +1056,13 @@ bool getHedgePositionFromMarvelmindUDP (struct MarvelmindUDP * udp,
 {
     uint8_t i;
     int32_t avg_x=0, avg_y=0, avg_z=0;
+    int32_t avg_vx=0, avg_vy=0, avg_vz=0;
     int64_t max_timestamp=0;
     TimestampOpt max_timestamp_opt;
     int64_t curT;
     uint8_t max_flags= 0;
     uint16_t max_angle= 0;
-    bool position_valid;
+    bool position_valid, speed_valid;
     bool realTime= false;
 #ifdef WIN32
     EnterCriticalSection(&udp->lock_);
@@ -1030,6 +1073,8 @@ bool getHedgePositionFromMarvelmindUDP (struct MarvelmindUDP * udp,
     {
         uint8_t real_values_count=udp->maxBufferedPositions;
         uint8_t nFound= 0;
+        uint8_t nFoundSpeed = 0;
+
         if (udp->lastValuesCount_<real_values_count)
             real_values_count=udp->lastValuesCount_;
         for (i=0; i<real_values_count; i++)
@@ -1057,6 +1102,13 @@ bool getHedgePositionFromMarvelmindUDP (struct MarvelmindUDP * udp,
                 max_flags= udp->positionBuffer[i].flags;
                 max_angle= udp->positionBuffer[i].angle;
             }
+
+            if (udp->positionBuffer[i].speed_exist) {
+               nFoundSpeed++;
+               avg_vx+=udp->positionBuffer[i].speed_x_mms;
+               avg_vy+=udp->positionBuffer[i].speed_y_mms;
+               avg_vz+=udp->positionBuffer[i].speed_z_mms;
+            }
         }
         if (nFound != 0)
         {
@@ -1067,6 +1119,17 @@ bool getHedgePositionFromMarvelmindUDP (struct MarvelmindUDP * udp,
         } else
         {
           position_valid=false;
+        }
+
+        if (nFoundSpeed != 0)
+        {
+            avg_vx/=nFoundSpeed;
+            avg_vy/=nFoundSpeed;
+            avg_vz/=nFoundSpeed;
+            speed_valid=true;
+        } else
+        {
+            speed_valid=false;
         }
     }
     else position_valid=false;
@@ -1079,6 +1142,10 @@ bool getHedgePositionFromMarvelmindUDP (struct MarvelmindUDP * udp,
     position->x=avg_x;
     position->y=avg_y;
     position->z=avg_z;
+    position->speed_exist= speed_valid;
+    position->speed_x_mms= avg_vx;
+    position->speed_y_mms= avg_vy;
+    position->speed_z_mms= avg_vz;
     position->timestamp=max_timestamp_opt;
     position->realTime= realTime;
     position->flags= max_flags;
@@ -1147,10 +1214,20 @@ void printHedgePositionFromMarvelmindUDP (struct MarvelmindUDP * udp, bool onlyN
             char times[128];
             printRealtimeStamp(udp, times, position.timestamp, position.realTime);
 
-            if (position.updated)
+            if (position.updated) {
                 printf ("Address: %d, X: %d, Y: %d, Z: %d  Flags: %d,  Angle: %.1f   at time T: %s\n", (int) address, (int) position.x,
                         (int) position.y, (int) position.z, (int) position.flags, (float) ((position.angle&0xfff)/10.0f),
                         times);
+
+               if (position.speed_exist)
+                {
+                    double vx= ((double) position.speed_x_mms)/1000.0;
+                    double vy= ((double) position.speed_y_mms)/1000.0;
+                    double vz= ((double) position.speed_z_mms)/1000.0;
+                    printf ("             Speed: VX: %.2f, VY: %.2f, VZ: %.2f  at time T: %s\n", vx, vy, vz, times);
+                }
+
+            }
         }
         udp->haveNewValues_=false;
     }
