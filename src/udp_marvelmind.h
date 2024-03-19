@@ -144,6 +144,25 @@ typedef struct {
 	bool updated;
 } UserPayloadData;
 
+typedef struct {
+    uint8_t address;
+    uint16_t vcc_mv;
+    int8_t rssi;
+    uint32_t dt_sec;
+} SSMBeaconTelemetryItem;
+
+typedef struct {
+    SSMBeaconTelemetryItem items[255];
+    uint8_t num_items;
+    bool updated;
+} SSMBeaconTelemetry;
+
+typedef struct {
+   uint8_t address;
+   char msg[256];
+   bool updated;
+} NMEAMessage;
+
 struct MarvelmindUDP
 {
 // Server URL address
@@ -178,6 +197,10 @@ struct MarvelmindUDP
     QualityPacket qualityPacket;
 
     UserPayloadData userPayloadData;
+
+    SSMBeaconTelemetry ssmBeaconsTelemetry;
+
+    NMEAMessage nmeaMessage;
 
 // verbose flag which activate console output
 //		default: False
@@ -234,6 +257,10 @@ void printTelemetryFromMarvelmindUDP(struct MarvelmindUDP * udp);
 void printQualityFromMarvelmindUDP(struct MarvelmindUDP * udp);
 
 void printUserDataFromMarvelmindUDP(struct MarvelmindUDP * udp);
+
+void printSSMTelemetryFromMarvelmindUDP(struct MarvelmindUDP * udp);
+
+void printNMEAMessageFromMarvelmindUDP(struct MarvelmindUDP * udp);
 
 #define DEFAULT_UDP_SERVER_ADDRESS "127.0.0.1"
 #define DEFAULT_UDP_SERVER_PORT 49100

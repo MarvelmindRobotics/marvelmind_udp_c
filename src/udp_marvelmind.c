@@ -20,13 +20,14 @@
 #pragma comment(lib,"ws2_32.lib") //Winsock Library
 #endif
 
-#define UDP_BUFFER_SIZE 255
+#define UDP_BUFFER_SIZE 4096
 
 #ifndef WIN32
 #define SOCKET_ERROR (-1)
 #endif
 
 #define PACKET_TYPE_STREAM_FROM_MM_SYSTEM 0x47
+#define PACKET_TYPE_STREAM16_FROM_MM_SYSTEM 0x48
 #define PACKET_TYPE_WRITE_TO_DEVICE 0x4a
 
 #define FRAME_ID_POSITION_CM 0x0001
@@ -41,6 +42,8 @@
 #define FRAME_ID_NT_POSITION_MM 0x0081
 #define FRAME_ID_NT_IMU_RAW 0x0083
 #define FRAME_ID_NT_IMU_FUSION 0x0085
+
+#define FRAME_ID_SSM_BEACONS_TELE 0x2001
 
 #define GENERIC_USER_DATA_DATAGRAM_ID 0x0280
 
@@ -597,6 +600,91 @@ static void processUserPayloadData(struct MarvelmindUDP * udp, uint8_t *bufferIn
     #endif
 }
 
+static void processSSMBeaconsTele(struct MarvelmindUDP * udp, uint8_t *bufferInput) {
+    uint16_t dsize;
+    uni_8x2_16 v16;
+    uni_8x4_32 v32;
+
+
+    #ifdef WIN32
+        EnterCriticalSection(&udp->lock_);
+    #else
+        pthread_mutex_lock (&udp->lock_);
+    #endif
+
+    dsize= bufferInput[4] + (((uint16_t) bufferInput[5]) << 8);
+
+    uint16_t ofs= 6;
+    uint8_t n= 0;
+    while(ofs<dsize+6) {
+       uint8_t adr= bufferInput[ofs];
+
+       v16.b[0]= bufferInput[ofs+1];
+       v16.b[1]= bufferInput[ofs+2];
+       uint16_t vcc_mv= v16.w;
+
+       int8_t rssi= bufferInput[ofs+3];
+
+       v32.b[0]= bufferInput[ofs+4];
+       v32.b[1]= bufferInput[ofs+5];
+       v32.b[2]= bufferInput[ofs+6];
+       v32.b[3]= bufferInput[ofs+7];
+       uint32_t dt= v32.dw;
+
+       udp->ssmBeaconsTelemetry.items[n].address= adr;
+       udp->ssmBeaconsTelemetry.items[n].vcc_mv= vcc_mv;
+       udp->ssmBeaconsTelemetry.items[n].rssi= rssi;
+       udp->ssmBeaconsTelemetry.items[n].dt_sec= dt;
+
+       ofs+= 10;
+       n++;
+       if (n>=255) break;
+       //printf("Telemetry: address=%d, VCC=%d, RSSI=%d, dT=%d\r\n", (int) adr, (int) vcc_mv, (int) rssi, (int) dt);
+    }
+
+    udp->ssmBeaconsTelemetry.num_items= n;
+    udp->ssmBeaconsTelemetry.updated= true;
+
+    /*
+    memcpy(&udp->userPayloadData.timestamp.timestamp64, &bufferInput[5], sizeof(udp->userPayloadData.timestamp.timestamp64));
+    udp->userPayloadData.realTime= true;
+
+    udp->userPayloadData.address= bufferInput[0];
+    udp->userPayloadData.dataSize= dsize-8;
+    for(uint8_t i= 0;i<udp->userPayloadData.dataSize;i++) {
+        udp->userPayloadData.data[i]= bufferInput[5+8+i];
+    }
+
+    udp->userPayloadData.updated= true;
+    */
+
+    #ifdef WIN32
+        LeaveCriticalSection(&udp->lock_);
+    #else
+        pthread_mutex_unlock (&udp->lock_);
+    #endif
+}
+
+static void processNMEAMessage(struct MarvelmindUDP * udp, uint8_t *bufferInput, uint8_t bufferSize) {
+    #ifdef WIN32
+        EnterCriticalSection(&udp->lock_);
+    #else
+        pthread_mutex_lock (&udp->lock_);
+    #endif
+
+    udp->nmeaMessage.address= bufferInput[bufferSize-1];
+    memcpy(&udp->nmeaMessage.msg[0], bufferInput, bufferSize-1);
+    udp->nmeaMessage.msg[bufferSize]= 0;
+    udp->nmeaMessage.updated= true;
+
+    #ifdef WIN32
+        LeaveCriticalSection(&udp->lock_);
+    #else
+        pthread_mutex_unlock (&udp->lock_);
+    #endif
+
+}
+
 
 void
 #ifndef WIN32
@@ -611,7 +699,7 @@ Marvelmind_Thread_ (void* param)
     int slen = sizeof(si_other) ;
     uint8_t bufferInput[UDP_BUFFER_SIZE];
     uint8_t bufferOutput[UDP_BUFFER_SIZE];
-    uint8_t dataSize;
+    uint16_t dataSize;
     bool highRes;
 
     udp->lastValues_next=0;
@@ -735,9 +823,10 @@ Marvelmind_Thread_ (void* param)
             }
         }
 
-        int recvSize= 64;
+        int recvSize= 4096;
         //try to receive some data, this is a blocking call
-        if (recvfrom(s, (char *) bufferInput, recvSize, 0, (struct sockaddr *) &si_other, &slen) == SOCKET_ERROR)
+        int recvRes= recvfrom(s, (char *) bufferInput, recvSize, 0, (struct sockaddr *) &si_other, &slen);
+        if (recvRes == SOCKET_ERROR)
         {
             if (failCount<100)
                 failCount++;
@@ -745,10 +834,26 @@ Marvelmind_Thread_ (void* param)
         }
         failCount= 0;
 
+        if (recvRes != 0) {
+            if (bufferInput[0] == '$')
+              if (bufferInput[1] == 'G')
+                if (bufferInput[2] == 'P') {
+                  // NMEA
+
+                  processNMEAMessage(udp, &bufferInput[0], recvRes );
+
+                  if (udp->anyInputPacketCallback) {
+                    udp->anyInputPacketCallback();
+                  }
+                  continue;
+                }
+        }
+
         #define PACKET_TYPE_STREAM_FROM_MM_SYSTEM 0x47
 #define PACKET_TYPE_WRITE_TO_DEVICE 0x4a
 
         if ((bufferInput[1] != PACKET_TYPE_STREAM_FROM_MM_SYSTEM)&&
+            (bufferInput[1] != PACKET_TYPE_STREAM16_FROM_MM_SYSTEM)&&
             (bufferInput[1] != PACKET_TYPE_WRITE_TO_DEVICE)
            ) continue;
         uint16_t dataCode= bufferInput[2] + (((int) bufferInput[3])<<8);
@@ -839,6 +944,21 @@ Marvelmind_Thread_ (void* param)
             }
         }
 
+        if (bufferInput[1] == PACKET_TYPE_STREAM16_FROM_MM_SYSTEM) {
+            switch(dataCode) {
+                case FRAME_ID_SSM_BEACONS_TELE:
+                {
+                    dataSize= 0;//
+                    break;
+                }
+
+                default:
+                {
+                continue;
+                }
+            }
+        }
+
         if (bufferInput[1] == PACKET_TYPE_WRITE_TO_DEVICE) {
             switch(dataCode) {
               case GENERIC_USER_DATA_DATAGRAM_ID:
@@ -925,6 +1045,12 @@ Marvelmind_Thread_ (void* param)
                  processUserPayloadData(udp, &bufferInput[0]);
                  break;
               }
+
+            case FRAME_ID_SSM_BEACONS_TELE:
+              {
+                 processSSMBeaconsTele(udp, &bufferInput[0]);
+                 break;
+              }
         }
 
         // callback
@@ -963,6 +1089,10 @@ struct MarvelmindUDP * createMarvelmindUDP ()
 
         udp->imuRawData.updated= false;
         udp->imuFusionData.updated= false;
+
+        udp->ssmBeaconsTelemetry.updated= false;
+
+        udp->nmeaMessage.updated = false;
 #ifdef WIN32
         InitializeCriticalSection(&udp->lock_);
 #else
@@ -1349,4 +1479,23 @@ void printUserDataFromMarvelmindUDP(struct MarvelmindUDP * udp) {
     }
 }
 
+void printSSMTelemetryFromMarvelmindUDP(struct MarvelmindUDP * udp) {
+    int i;
+
+    if (udp->ssmBeaconsTelemetry.updated) {
+        udp->ssmBeaconsTelemetry.updated= false;
+        for(i=0;i<udp->ssmBeaconsTelemetry.num_items;i++) {
+             printf ("SSM telemetry: Address: %d, Voltage: %.3f V, RSSI: %d dBm,   Passed from update: %d sec\n",
+                (int) udp->ssmBeaconsTelemetry.items[i].address, ((float) udp->ssmBeaconsTelemetry.items[i].vcc_mv)/1000.0f,
+                (int) udp->ssmBeaconsTelemetry.items[i].rssi, udp->ssmBeaconsTelemetry.items[i].dt_sec);
+        }
+    }
+}
+
+void printNMEAMessageFromMarvelmindUDP(struct MarvelmindUDP * udp) {
+    if (udp->nmeaMessage.updated) {
+        udp->nmeaMessage.updated= false;
+        printf("NMEA0183 message from %d: %s \r\n", (int) udp->nmeaMessage.address, udp->nmeaMessage.msg);
+    }
+}
 

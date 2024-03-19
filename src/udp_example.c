@@ -144,6 +144,10 @@ int main (int argc, char *argv[])
         printQualityFromMarvelmindUDP(udp);
 
         printUserDataFromMarvelmindUDP(udp);
+
+        printSSMTelemetryFromMarvelmindUDP(udp);
+
+        printNMEAMessageFromMarvelmindUDP(udp);
     }
 
     // Exit
